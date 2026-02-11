@@ -2,13 +2,21 @@ import os
 import shutil
 import random
 import time
-import pickle
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras import layers, models
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+# ===============================
+# REPRODUCIBILITY
+# ===============================
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
 
 # ===============================
 # CONFIG
@@ -20,13 +28,14 @@ TEST_DIR = os.path.join(SPLIT_DATASET, "test")
 
 IMG_SIZE = 224
 BATCH_SIZE = 32
-EPOCHS = 50 
+EPOCHS = 25   # Reduced from 50 (avoid overfitting)
 
 # ===============================
 # STEP 1 — TRAIN/TEST SPLIT
 # ===============================
 
 def split_dataset(train_ratio=0.8):
+
     if os.path.exists(SPLIT_DATASET):
         print("Split dataset already exists.")
         return
@@ -35,7 +44,9 @@ def split_dataset(train_ratio=0.8):
     os.makedirs(TEST_DIR, exist_ok=True)
 
     for class_name in os.listdir(ORIGINAL_DATASET):
+
         class_path = os.path.join(ORIGINAL_DATASET, class_name)
+
         if not os.path.isdir(class_path):
             continue
 
@@ -43,6 +54,7 @@ def split_dataset(train_ratio=0.8):
         random.shuffle(images)
 
         split_index = int(len(images) * train_ratio)
+
         train_images = images[:split_index]
         test_images = images[split_index:]
 
@@ -50,29 +62,44 @@ def split_dataset(train_ratio=0.8):
         os.makedirs(os.path.join(TEST_DIR, class_name), exist_ok=True)
 
         for img in train_images:
-            shutil.copy(os.path.join(class_path, img),
-                        os.path.join(TRAIN_DIR, class_name, img))
+            shutil.copy(
+                os.path.join(class_path, img),
+                os.path.join(TRAIN_DIR, class_name, img)
+            )
 
         for img in test_images:
-            shutil.copy(os.path.join(class_path, img),
-                        os.path.join(TEST_DIR, class_name, img))
+            shutil.copy(
+                os.path.join(class_path, img),
+                os.path.join(TEST_DIR, class_name, img)
+            )
 
     print("Dataset split complete.")
 
 
 # ===============================
-# DATA GENERATORS
+# DATA GENERATORS (AUGMENTED)
 # ===============================
 
 def get_generators():
-    train_datagen = ImageDataGenerator(rescale=1./255)
+
+    train_datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        fill_mode='nearest'
+    )
+
     test_datagen = ImageDataGenerator(rescale=1./255)
 
     train_gen = train_datagen.flow_from_directory(
         TRAIN_DIR,
         target_size=(IMG_SIZE, IMG_SIZE),
         batch_size=BATCH_SIZE,
-        class_mode='categorical'
+        class_mode='categorical',
+        seed=SEED
     )
 
     test_gen = test_datagen.flow_from_directory(
@@ -87,10 +114,11 @@ def get_generators():
 
 
 # ===============================
-# MODELS
+# MODEL DEFINITIONS
 # ===============================
 
 def build_agroitlite(num_classes):
+
     model = models.Sequential([
         layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3)),
         layers.Conv2D(16, (3,3), activation='relu'),
@@ -99,18 +127,24 @@ def build_agroitlite(num_classes):
         layers.MaxPooling2D(2,2),
         layers.Flatten(),
         layers.Dense(64, activation='relu'),
+        layers.Dropout(0.3),
         layers.Dense(num_classes, activation='softmax')
     ])
+
     return model
 
 
-def build_model(base_model, num_classes):
+def build_transfer_model(base_model, num_classes):
+
     base_model.trainable = False
+
     model = models.Sequential([
         base_model,
         layers.GlobalAveragePooling2D(),
+        layers.Dropout(0.3),
         layers.Dense(num_classes, activation='softmax')
     ])
+
     return model
 
 
@@ -119,14 +153,40 @@ def build_model(base_model, num_classes):
 # ===============================
 
 def train_and_evaluate(name, model, train_gen, test_gen):
-    print(f"\nTraining {name}...")
-    model.compile(optimizer='adam',
-                  loss='categorical_crossentropy',
-                  metrics=['accuracy'])
 
-    model.fit(train_gen, epochs=EPOCHS, verbose=1)
+    print("\n==============================")
+    print(f"Training {name}")
+    print("==============================")
 
-    print(f"Evaluating {name}...")
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    early_stop = EarlyStopping(
+        monitor='val_loss',
+        patience=5,
+        restore_best_weights=True
+    )
+
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.3,
+        patience=3,
+        min_lr=1e-6
+    )
+
+    model.fit(
+        train_gen,
+        validation_data=test_gen,
+        epochs=EPOCHS,
+        callbacks=[early_stop, reduce_lr],
+        verbose=1
+    )
+
+    print(f"\nEvaluating {name} on test set...")
+
     start = time.time()
     predictions = model.predict(test_gen)
     end = time.time()
@@ -138,6 +198,8 @@ def train_and_evaluate(name, model, train_gen, test_gen):
     prec = precision_score(y_true, y_pred, average='weighted', zero_division=0)
     rec = recall_score(y_true, y_pred, average='weighted')
     f1 = f1_score(y_true, y_pred, average='weighted')
+
+    print(f"{name} Accuracy: {acc*100:.2f}%")
 
     return {
         "Model": name,
@@ -163,36 +225,40 @@ if __name__ == "__main__":
 
     results = []
 
-    # AgroitLite
+    # 1️⃣ AgroitLite
     model1 = build_agroitlite(num_classes)
     results.append(train_and_evaluate("AgroitLite", model1, train_gen, test_gen))
 
-    # MobileNetV2
+    # 2️⃣ MobileNetV2
     base = tf.keras.applications.MobileNetV2(
         input_shape=(IMG_SIZE, IMG_SIZE, 3),
         include_top=False,
         weights='imagenet'
     )
-    model2 = build_model(base, num_classes)
+    model2 = build_transfer_model(base, num_classes)
     results.append(train_and_evaluate("MobileNetV2", model2, train_gen, test_gen))
 
-    # MobileNetV3
+    # 3️⃣ MobileNetV3Small
     base = tf.keras.applications.MobileNetV3Small(
         input_shape=(IMG_SIZE, IMG_SIZE, 3),
         include_top=False,
         weights='imagenet'
     )
-    model3 = build_model(base, num_classes)
+    model3 = build_transfer_model(base, num_classes)
     results.append(train_and_evaluate("MobileNetV3Small", model3, train_gen, test_gen))
 
-    # EfficientNetB0
+    # 4️⃣ EfficientNetB0
     base = tf.keras.applications.EfficientNetB0(
         input_shape=(IMG_SIZE, IMG_SIZE, 3),
         include_top=False,
         weights='imagenet'
     )
-    model4 = build_model(base, num_classes)
+    model4 = build_transfer_model(base, num_classes)
     results.append(train_and_evaluate("EfficientNetB0", model4, train_gen, test_gen))
+
+    # ===============================
+    # RESULTS TABLE
+    # ===============================
 
     df = pd.DataFrame(results)
     df = df.sort_values(by="Accuracy (%)", ascending=False)
