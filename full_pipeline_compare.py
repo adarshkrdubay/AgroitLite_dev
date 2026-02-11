@@ -20,7 +20,7 @@ TEST_DIR = os.path.join(SPLIT_DATASET, "test")
 
 IMG_SIZE = 224
 BATCH_SIZE = 32
-EPOCHS = 5  # Increase to 25+ for paper
+EPOCHS = 50  # Increase to 25+ for paper
 
 # ===============================
 # STEP 1 — TRAIN/TEST SPLIT
