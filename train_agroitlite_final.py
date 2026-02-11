@@ -207,4 +207,36 @@ if __name__ == "__main__":
     class_labels = list(test_gen.class_indices.keys())
 
     acc = np.mean(y_true == y_pred)
-    print(f"\nFinal Test
+    print(f"\nFinal Test Accuracy: {acc*100:.2f}%")
+
+    # Classification report
+    report = classification_report(
+        y_true,
+        y_pred,
+        target_names=class_labels,
+        zero_division=0
+    )
+
+    print("\nClassification Report:\n")
+    print(report)
+
+    with open("AgroitLite_classification_report.txt", "w") as f:
+        f.write(report)
+
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+
+    plt.figure(figsize=(8,6))
+    sns.heatmap(cm, annot=True, fmt="d",
+                xticklabels=class_labels,
+                yticklabels=class_labels,
+                cmap="Blues")
+
+    plt.title("AgroitLite Confusion Matrix")
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+    plt.tight_layout()
+    plt.savefig("AgroitLite_confusion_matrix.png")
+    plt.close()
+
+    print("Confusion matrix saved as AgroitLite_confusion_matrix.png")
