@@ -10,7 +10,7 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 # CONFIG
 # ==============================
 
-TEST_DIR = "dataset/test"  # Change if needed
+TEST_DIR = "dataset"  # Change if needed
 IMG_SIZE = 224
 BATCH_SIZE = 32
 
